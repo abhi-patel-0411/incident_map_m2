@@ -2,6 +2,10 @@ import React, { useEffect, useRef, useState } from "react";
 import MapView from "@arcgis/core/views/MapView";
 import Map from "@arcgis/core/Map";
 import FeatureLayer from "@arcgis/core/layers/FeatureLayer";
+import Graphic from "@arcgis/core/Graphic";
+import SimpleMarkerSymbol from "@arcgis/core/symbols/SimpleMarkerSymbol";
+import SimpleFillSymbol from "@arcgis/core/symbols/SimpleFillSymbol";
+import SimpleLineSymbol from "@arcgis/core/symbols/SimpleLineSymbol";
 import * as reactiveUtils from "@arcgis/core/core/reactiveUtils";
 import Box from "@mui/material/Box";
 import CircularProgress from "@mui/material/CircularProgress";
@@ -89,7 +93,7 @@ export function MapPanel({ layerUrl, settings, filterClause = "1=1" }: { layerUr
       { initial: true },
     );
 
-    const unsubscribeNavigation = mapNavigationBus.subscribe(async ({ goToTarget, openPopup, clearGraphics }: any) => {
+    const unsubscribeNavigation = mapNavigationBus.subscribe(async ({ goToTarget, openPopup, clearGraphics, highlightFeatures }: any) => {
       try {
         if (view) {
           if (clearGraphics || goToTarget) {
@@ -99,7 +103,53 @@ export function MapPanel({ layerUrl, settings, filterClause = "1=1" }: { layerUr
           if (goToTarget) {
             await view.goTo(goToTarget);
           }
-          if (openPopup && openPopup.geometry) {
+
+          const addHighlightGraphic = (geometry: any) => {
+            let highlightGraphic;
+            if (geometry.type === "point") {
+              highlightGraphic = new Graphic({
+                geometry: geometry,
+                symbol: new SimpleMarkerSymbol({
+                  color: [0, 255, 255, 0.4], // Cyan glowing transparent
+                  outline: {
+                    color: [0, 255, 255, 1], // Solid Cyan outline
+                    width: 2
+                  },
+                  size: 24
+                })
+              });
+            } else if (geometry.type === "polyline") {
+              highlightGraphic = new Graphic({
+                geometry: geometry,
+                symbol: new SimpleLineSymbol({
+                  color: [0, 255, 255, 1],
+                  width: 4
+                })
+              });
+            } else {
+              highlightGraphic = new Graphic({
+                geometry: geometry,
+                symbol: new SimpleFillSymbol({
+                  color: [0, 255, 255, 0.2],
+                  outline: {
+                    color: [0, 255, 255, 1],
+                    width: 2
+                  }
+                })
+              });
+            }
+            view.graphics.add(highlightGraphic);
+          };
+
+          if (highlightFeatures && highlightFeatures.length > 0) {
+            highlightFeatures.forEach((feature: any) => {
+              if (feature.geometry) {
+                addHighlightGraphic(feature.geometry);
+              }
+            });
+          } else if (openPopup && openPopup.geometry) {
+            addHighlightGraphic(openPopup.geometry);
+
             const loc: any = openPopup.geometry.type === "point" ? openPopup.geometry : (openPopup.geometry as any).extent?.center;
             if (view.popup) {
               view.popup.open({

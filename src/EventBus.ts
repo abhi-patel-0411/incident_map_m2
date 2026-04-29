@@ -13,6 +13,7 @@ export type MapNavigationEvent = {
   goToTarget?: Parameters<MapView["goTo"]>[0] | null;
   openPopup?: import("@arcgis/core/Graphic").default | null;
   clearGraphics?: boolean;
+  highlightFeatures?: import("@arcgis/core/Graphic").default[] | null;
 };
 
 export type MapNavigationListener = (event: MapNavigationEvent) => void;

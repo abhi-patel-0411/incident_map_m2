@@ -47,7 +47,7 @@ export function Filter({
 
     layerRef.current
       .load()
-      .then((layer) => {
+      .then(async (layer) => {
         if (isCancelled) return;
         const allowedTypes = [
           "string",
@@ -57,9 +57,51 @@ export function Filter({
           "single",
           "oid",
         ];
-        setAvailableFields(
-          layer.fields.filter((f) => allowedTypes.includes(f.type)),
+
+        // 1. Get initial list of filterable types, ignoring system fields
+        const candidateFields = layer.fields.filter(
+          (f) =>
+            allowedTypes.includes(f.type) &&
+            !["globalid", "shape", "objectid", "fid", "shape_area", "shape_length"].includes(
+              f.name.toLowerCase()
+            )
         );
+
+        // 2. Perform a single fast sample query to see which fields actually contain non-empty data
+        try {
+          const query = layer.createQuery();
+          query.where = "1=1";
+          query.outFields = candidateFields.map(f => f.name);
+          query.returnGeometry = false;
+          query.num = 500; // Look at up to 500 records to guess which fields actually have data
+
+          const result = await layer.queryFeatures(query);
+          
+          if (isCancelled) return;
+
+          const populatedFieldNames = new Set<string>();
+          for (const feature of result.features) {
+            for (const [key, value] of Object.entries(feature.attributes)) {
+              // Mark the field as populated if there's any valid string/number data
+              if (value !== null && value !== undefined && String(value).trim() !== "") {
+                populatedFieldNames.add(key);
+              }
+            }
+          }
+
+          // 3. Keep only fields that we found data for, or fields that have coded domains (prevent accidentally dropping valid domain filters)
+          const fieldsWithData = candidateFields.filter(f => 
+            populatedFieldNames.has(f.name) || (f.domain && (f.domain as any).codedValues)
+          );
+
+          setAvailableFields(fieldsWithData);
+        } catch (sampleErr) {
+          // Fallback if the sampling query fails
+          if (!isCancelled) {
+            console.warn("Failed to sample fields, falling back to all candidate fields", sampleErr);
+            setAvailableFields(candidateFields);
+          }
+        }
       })
       .catch((e) =>
         console.error("Error loading layer metadata for filter", e),
@@ -115,7 +157,7 @@ export function Filter({
         query.outFields = [selectedField];
         query.returnGeometry = false;
         query.orderByFields = [`${selectedField} ASC`];
-        query.num = 50; // Performance limit
+        query.num = 2000; // Allow up to 2000 unique distinct values so we don't truncate user options
 
         const result = await layerRef.current!.queryFeatures(query);
         if (!isCancelled) {

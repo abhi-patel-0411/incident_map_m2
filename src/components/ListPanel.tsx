@@ -12,7 +12,6 @@ import Alert from "@mui/material/Alert";
 import IconButton from "@mui/material/IconButton";
 import Collapse from "@mui/material/Collapse";
 import Button from "@mui/material/Button";
-import Checkbox from "@mui/material/Checkbox";
 import Select from "@mui/material/Select";
 import MenuItem from "@mui/material/MenuItem";
 import useMediaQuery from "@mui/material/useMediaQuery";
@@ -159,36 +158,6 @@ export function ListPanel({
   useEffect(() => {
     if (!layerRef.current || !mapState.layerReady) return;
 
-    // Prioritize selected features if any
-    if (selectedFeatureIds.size > 0) {
-      const currentLayer = layerRef.current;
-      currentLayer
-        .load()
-        .then(() => {
-          const query = currentLayer.createQuery();
-          query.objectIds = Array.from(selectedFeatureIds);
-          return currentLayer.queryExtent(query);
-        })
-        .then((response) => {
-          if (response.extent) {
-            const e = response.extent;
-            if (e.xmin === e.xmax && e.ymin === e.ymax) {
-              mapNavigationBus.emit({
-                goToTarget: { target: e.center, zoom: LIST_ITEM_FOCUS_ZOOM },
-              });
-            } else {
-              mapNavigationBus.emit({
-                goToTarget: { target: e.clone().expand(1.2) },
-              });
-            }
-          }
-        })
-        .catch((err) =>
-          console.error("Failed to zoom to selected features", err),
-        );
-      return;
-    }
-
     if (filterClause && filterClause !== "1=1") {
       const currentLayer = layerRef.current;
       currentLayer
@@ -226,7 +195,60 @@ export function ListPanel({
       mapNavigationBus.emit({ clearGraphics: true });
     }
     // Intentionally omit mapState.extent so we don't zoom on every pan
-  }, [filterClause, mapState.layerReady, selectedFeatureIds]);
+  }, [filterClause, mapState.layerReady]);
+
+  // Watch for selected item changes to render multiple highlights on the map
+  useEffect(() => {
+    if (!layerRef.current || !mapState.layerReady) return;
+    
+    if (selectedFeatureIds.size > 0) {
+      const currentLayer = layerRef.current;
+      currentLayer
+        .load()
+        .then(() => {
+          // Fetch Extent and geometries
+          const featureQuery = currentLayer.createQuery();
+          featureQuery.objectIds = Array.from(selectedFeatureIds);
+          featureQuery.returnGeometry = true;
+          featureQuery.outFields = ["*"];
+          
+          const extentQuery = currentLayer.createQuery();
+          extentQuery.objectIds = Array.from(selectedFeatureIds);
+          
+          return Promise.all([
+            currentLayer.queryExtent(extentQuery),
+            currentLayer.queryFeatures(featureQuery)
+          ]);
+        })
+        .then(([extentResponse, featureResponse]) => {
+          const { extent } = extentResponse;
+          const features = featureResponse.features;
+          
+          if (extent) {
+            if (extent.xmin === extent.xmax && extent.ymin === extent.ymax) {
+              mapNavigationBus.emit({
+                goToTarget: { target: extent.center, zoom: LIST_ITEM_FOCUS_ZOOM },
+                highlightFeatures: features,
+                clearGraphics: true
+              });
+            } else {
+              mapNavigationBus.emit({
+                goToTarget: { target: extent.clone().expand(1.2) },
+                highlightFeatures: features,
+                clearGraphics: true
+              });
+            }
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to highlight multiple features", err);
+        });
+    } else {
+       // If no items are selected, fall back to zoom filter extent (or clear)
+       // Just emitting clear graphics is safe since we have other logic for filter zooms
+       mapNavigationBus.emit({ clearGraphics: true });
+    }
+  }, [selectedFeatureIds, mapState.layerReady]);
 
   useEffect(() => {
     const unsubscribe = mapEventBus.subscribe(
@@ -359,6 +381,17 @@ export function ListPanel({
 
       const isSelected = selectedFeatureIds.has(Number(objectId));
 
+      const handleCardClick = async () => {
+        // Toggle selection
+        const newSet = new Set(selectedFeatureIds);
+        if (isSelected) {
+          newSet.delete(Number(objectId));
+        } else {
+          newSet.add(Number(objectId));
+        }
+        setSelectedFeatureIds(newSet);
+      };
+
       return (
         <Card
           key={String(objectId)}
@@ -375,44 +408,7 @@ export function ListPanel({
               boxShadow: "0 4px 12px rgba(0,0,0,0.05)",
             },
           }}
-          onClick={async () => {
-            if (feature.geometry != null) {
-              mapNavigationBus.emit({
-                goToTarget: {
-                  target: feature.geometry,
-                  zoom: LIST_ITEM_FOCUS_ZOOM,
-                },
-                openPopup: feature,
-              });
-              return;
-            }
-
-            // Fallback: Geometry wasn't fetched to save bandwidth. Fetch it on click!
-            if (layerRef.current && objectId != null) {
-              try {
-                const geomQuery = layerRef.current.createQuery();
-                geomQuery.objectIds = [Number(objectId)];
-                geomQuery.returnGeometry = true;
-                geomQuery.outFields = ["*"]; // Need fields for popup
-                const res = await layerRef.current.queryFeatures(geomQuery);
-
-                if (
-                  res.features.length > 0 &&
-                  res.features[0].geometry != null
-                ) {
-                  mapNavigationBus.emit({
-                    goToTarget: {
-                      target: res.features[0].geometry,
-                      zoom: LIST_ITEM_FOCUS_ZOOM,
-                    },
-                    openPopup: res.features[0],
-                  });
-                }
-              } catch (err) {
-                console.error("Failed to zoom to feature geometry:", err);
-              }
-            }
-          }}
+          onClick={handleCardClick}
         >
           <CardContent
             sx={{
@@ -428,23 +424,9 @@ export function ListPanel({
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
+                pt: 0.5
               }}
             >
-              <Checkbox
-                checked={isSelected}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const newSet = new Set(selectedFeatureIds);
-                  if (isSelected) {
-                    newSet.delete(Number(objectId));
-                  } else {
-                    newSet.add(Number(objectId));
-                  }
-                  setSelectedFeatureIds(newSet);
-                }}
-                size="small"
-                sx={{ p: 0, mb: 1, color: "#cbd5e1" }}
-              />
               <Avatar
                 sx={{
                   bgcolor: isSelected ? "#3b82f6" : "#eff6ff",
